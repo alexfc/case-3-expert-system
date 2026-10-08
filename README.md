@@ -13,7 +13,6 @@
 | `static/index.html` | Интерфейс пользователя (Bootstrap 5.3, только CSS) |
 | `static/vendor/bootstrap/` | Локальная копия Bootstrap 5.3.3 (CSS) - работает без интернета |
 | `tests/test_es.py` | 20 автотестов |
-| `report/` | Отчёт (.docx), скриншоты, вывод тестов |
 
 ## Запуск
 
