@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>АвтоМото-Диагност</title>
+<link href="/static/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
+<style>
+  * { transition: none !important; animation: none !important; }
+</style>
+</head>
+<body>
+<div class="container my-3" style="min-width: 1100px">
+  <h1 class="h3">АвтоМото-Диагност</h1>
+  <p>Экспертная система диагностики неисправностей авто- и мототехники (CLIPS)</p>
+
+  <ul class="nav nav-tabs mb-3">
+    <li class="nav-item"><a class="nav-link active" href="#" data-tab="dx">Диагностика</a></li>
+    <li class="nav-item"><a class="nav-link" href="#" data-tab="kb">База знаний</a></li>
+  </ul>
+
+  <div id="tab-dx" class="row">
+    <div class="col-4">
+      <form id="form">
+        <h2 class="h5">Транспортное средство</h2>
+        <div class="mb-2">
+          <label class="form-label">Тип</label>
+          <select class="form-select" id="vtype">
+            <option value="car">Автомобиль</option>
+            <option value="moto">Мотоцикл</option>
+          </select>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Пробег, км</label>
+          <input type="number" class="form-control" id="mileage" min="0">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Возраст АКБ, лет</label>
+          <select class="form-select" id="battery">
+            <option value="-1">не знаю</option>
+            <option value="0">0</option><option value="1">1</option><option value="2">2</option>
+            <option value="3">3</option><option value="4">4</option><option value="5">5</option>
+            <option value="6">6 и больше</option>
+          </select>
+        </div>
+        <h2 class="h5">Симптомы</h2>
+        <div id="symptoms"></div>
+        <button type="submit" class="btn btn-primary mt-3">Поставить диагноз</button>
+      </form>
+    </div>
+    <div class="col-8">
+      <h2 class="h5">Результат</h2>
+      <div id="result">Выберите симптомы и нажмите "Поставить диагноз".</div>
+    </div>
+  </div>
+
+  <div id="tab-kb" class="d-none">
+    <p id="kb-stats"></p>
+    <input class="form-control mb-3" id="kb-search" placeholder="Поиск">
+    <div id="kb-list"></div>
+  </div>
+</div>
+
+<script>
+const SEV = { low: "низкая", medium: "средняя", high: "высокая", critical: "критическая" };
+const params = new URLSearchParams(location.search);
+let catalog;
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function renderSymptoms(checked = new Set()) {
+  const vehicle = $("#vtype").value;
+  let html = "", group = "";
+  for (const s of catalog.symptoms) {
+    if (s.applies !== "both" && s.applies !== vehicle) continue;
+    if (s.group !== group) { group = s.group; html += `<b>${esc(group)}</b>`; }
+    html += `<div class="form-check"><input class="form-check-input" type="checkbox" value="${s.code}" id="s-${s.code}" ${checked.has(s.code) ? "checked" : ""}>
+      <label class="form-check-label" for="s-${s.code}">${esc(s.text)}</label></div>`;
+  }
+  $("#symptoms").innerHTML = html;
+}
+
+function selected() { return [...document.querySelectorAll("#symptoms input:checked")].map((i) => i.value); }
+
+function diagnosis(d) {
+  return `<h3 class="h6 mt-3">${esc(d.name)}</h3>
+    <p class="mb-1">Уверенность: ${d.cf >= 0 ? Math.round(d.cf * 100) + "%" : "опровергнута"} (CF = ${d.cf.toFixed(3)}), опасность: ${SEV[d.severity]}</p>
+    ${d.accepted ? `<p class="mb-1">${esc(d.advice)}</p>
+      <p class="mb-1">Рекомендуемые товары: ${d.parts.map((p) => `${esc(p.name)} (${esc(p.category)})`).join(", ")}</p>` : ""}
+    <p class="mb-0">Почему:</p>
+    <ul>${d.explanation.map((e) => `<li>${esc(e.rule)} (CF ${e.cf.toFixed(2)}): ${esc(e.text)}</li>`).join("")}</ul>`;
+}
+
+function renderResult(r) {
+  const accepted = r.diagnoses.filter((d) => d.accepted);
+  const rejected = r.diagnoses.filter((d) => !d.accepted);
+  $("#result").innerHTML = `
+    <p>Сработало правил: ${r.rules_fired}. Порог: CF >= ${r.threshold}.</p>
+    ${r.warnings.map((w) => `<div class="alert alert-danger">${esc(w)}</div>`).join("")}
+    ${r.conclusions.map((c) => `<div class="alert alert-secondary">${esc(c)}</div>`).join("")}
+    ${accepted.map(diagnosis).join("")}
+    ${rejected.length ? `<h3 class="h6 mt-3 text-muted">Отклонённые гипотезы:</h3>${rejected.map(diagnosis).join("")}` : ""}
+    <h3 class="h6 mt-3">Трасса вывода</h3>
+    <table class="table table-sm table-bordered">
+      <tr><th>№</th><th>Правило</th><th>Факты</th></tr>
+      ${r.trace.map((t) => `<tr><td>${t.n}</td><td>${esc(t.rule)}</td><td>${esc(t.facts)}</td></tr>`).join("")}
+    </table>`;
+}
+
+async function run() {
+  const body = { type: $("#vtype").value, mileage: $("#mileage").value || 0, battery_age: +$("#battery").value, symptoms: selected() };
+  const res = await fetch("/api/diagnose", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) { $("#result").innerHTML = `<div class="alert alert-danger">${esc(data.error)}</div>`; return; }
+  renderResult(data);
+}
+
+function renderKB() {
+  const c = catalog.counts;
+  $("#kb-stats").textContent = `Правил: ${catalog.rules.length}, симптомов: ${c["symptom-info"]}, неисправностей: ${c["fault-info"]}, связей с каталогом: ${c.part}`;
+  const q = $("#kb-search").value.trim().toLowerCase();
+  $("#kb-list").innerHTML = [...catalog.templates, ...catalog.rules]
+    .filter((x) => !q || x.source.toLowerCase().includes(q))
+    .map((x) => `<pre class="border p-2" style="white-space: pre-wrap">${esc(x.source)}</pre>`).join("");
+}
+
+function showTab(t) {
+  document.querySelectorAll(".nav-link").forEach((a) => a.classList.toggle("active", a.dataset.tab === t));
+  $("#tab-dx").classList.toggle("d-none", t !== "dx");
+  $("#tab-kb").classList.toggle("d-none", t !== "kb");
+}
+
+(async function init() {
+  catalog = await (await fetch("/api/catalog")).json();
+  $("#vtype").value = params.get("type") || "car";
+  $("#mileage").value = params.get("mileage") || "";
+  if (params.has("battery")) $("#battery").value = params.get("battery");
+  renderSymptoms(new Set((params.get("s") || "").split(",").filter(Boolean)));
+  $("#kb-search").value = params.get("q") || "";
+  renderKB();
+  showTab(params.get("tab") || "dx");
+  if (params.get("run") === "1") run();
+
+  $("#vtype").onchange = () => renderSymptoms(new Set(selected()));
+  document.querySelectorAll(".nav-link").forEach((a) => a.onclick = (e) => { e.preventDefault(); showTab(a.dataset.tab); });
+  $("#form").onsubmit = (e) => { e.preventDefault(); run(); };
+  $("#kb-search").oninput = renderKB;
+})();
+</script>
+</body>
+</html>
